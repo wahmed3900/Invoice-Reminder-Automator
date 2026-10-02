@@ -42,6 +42,21 @@ function pick(source, fields) {
   return out;
 }
 
+// Prisma's MongoDB connector rejects date-only strings like "2026-01-01"
+// ("premature end of input, expected ISO-8601 DateTime") and 500s instead of
+// validating — coerce to a real Date (or report which field was bad) before
+// it ever reaches Prisma. A date-only string parses fine via `new Date(...)`.
+const DATE_FIELDS = ['issueDate', 'dueDate'];
+function normalizeDates(data) {
+  for (const f of DATE_FIELDS) {
+    if (data[f] === undefined) continue;
+    const d = new Date(data[f]);
+    if (Number.isNaN(d.getTime())) return f;
+    data[f] = d;
+  }
+  return null;
+}
+
 // Malformed Mongo ids would make Prisma throw — treat them as "not found"
 app.param('id', (req, res, next, id) => (OBJECT_ID.test(id) ? next() : res.status(404).json({ error: 'Not found' })));
 
@@ -219,6 +234,8 @@ app.post('/api/invoices', requireAuth, checkInvoiceLimit, route(async (req, res)
   if (!data.invoiceNumber || data.totalAmount === undefined || !data.dueDate) {
     return res.status(400).json({ error: 'invoiceNumber, totalAmount and dueDate are required' });
   }
+  const badDateField = normalizeDates(data);
+  if (badDateField) return res.status(400).json({ error: `Invalid date for ${badDateField}` });
   // Without this, a user could attach an invoice to someone else's client
   // and the scheduler would email that person.
   if (!(await clientBelongsToUser(data.clientId, req.user.userId))) {
@@ -245,6 +262,8 @@ app.patch('/api/invoices/:id/status', requireAuth, route(async (req, res) => {
 app.put('/api/invoices/:id', requireAuth, route(async (req, res) => {
   if (!(await findOwnedInvoice(req.params.id, req.user.userId))) return res.status(404).json({ error: 'Invoice not found' });
   const data = pick(req.body, INVOICE_FIELDS);
+  const badDateField = normalizeDates(data);
+  if (badDateField) return res.status(400).json({ error: `Invalid date for ${badDateField}` });
   if (data.clientId !== undefined && !(await clientBelongsToUser(data.clientId, req.user.userId))) {
     return res.status(400).json({ error: 'clientId does not match one of your clients' });
   }
