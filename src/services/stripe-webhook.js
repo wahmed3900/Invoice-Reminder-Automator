@@ -21,6 +21,38 @@ async function syncPlanFromSubscription(sub) {
   else console.log(`[stripe] customer ${customerId} → ${plan} (${sub.status})`);
 }
 
+// $5-for-5-weeks intro offer: Checkout starts the subscription on the trial
+// Price (STRIPE_TRIAL_PRICE_ID); once it's confirmed paid, we wrap it in a
+// 2-phase Subscription Schedule so it rolls onto the regular Pro price after
+// exactly one billing cycle of the trial price, with no action needed from
+// the user or a second checkout.
+async function applyTrialSchedule(sub) {
+  if (sub.schedule) return; // already scheduled (e.g. webhook retried)
+  const trialPriceId = process.env.STRIPE_TRIAL_PRICE_ID;
+  const regularPriceId = process.env.STRIPE_PRO_PRICE_ID;
+  if (!trialPriceId || !regularPriceId) {
+    console.error('[stripe] trialOffer subscription but STRIPE_TRIAL_PRICE_ID/STRIPE_PRO_PRICE_ID missing — leaving as-is');
+    return;
+  }
+
+  const stripe = getStripe();
+  const schedule = await stripe.subscriptionSchedules.create({ from_subscription: sub.id });
+  await stripe.subscriptionSchedules.update(schedule.id, {
+    end_behavior: 'release', // keep renewing on the last phase's price forever
+    phases: [
+      {
+        items: [{ price: trialPriceId, quantity: 1 }],
+        iterations: 1, // exactly one 5-week cycle at $5
+        start_date: schedule.phases[0].start_date,
+      },
+      {
+        items: [{ price: regularPriceId, quantity: 1 }],
+      },
+    ],
+  });
+  console.log(`[stripe] subscription ${sub.id} scheduled: 1x trial price -> regular Pro price`);
+}
+
 async function markInvoicePaid(invoiceId) {
   if (!invoiceId || !OBJECT_ID.test(invoiceId)) return;
   // updateMany + status filter makes Stripe's duplicate deliveries harmless
@@ -59,6 +91,7 @@ async function handleStripeWebhook(req, res) {
         const session = event.data.object;
         if (session.mode === 'subscription' && session.subscription) {
           const sub = await getStripe().subscriptions.retrieve(session.subscription);
+          if (session.metadata?.trialOffer === 'true') await applyTrialSchedule(sub);
           await syncPlanFromSubscription(sub);
         } else if (session.mode === 'payment' && session.payment_status === 'paid') {
           await markInvoicePaid(session.metadata?.invoiceId);

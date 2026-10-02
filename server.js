@@ -6,6 +6,7 @@ const { getStripe } = require('./src/lib/stripe');
 const { passport, issueToken, requireAuth } = require('./src/middleware/auth');
 const {
   checkInvoiceLimit, checkClientLimit, requirePro, getLimits, getUserPlan, PLANS,
+  toPublicLimits, toPublicPlans,
 } = require('./src/middleware/subscription');
 const { startScheduler, runReminderCycle } = require('./reminder-scheduler');
 const aiChat = require('./src/services/ai-chat.service');
@@ -59,7 +60,7 @@ const route = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).ca
 // ==================== PUBLIC ====================
 app.get('/', (_req, res) => res.json({ message: 'Invoice API is working!' }));
 app.get('/health', (_req, res) => res.json({ status: 'ok', ts: Date.now() }));
-app.get('/api/plans', (_req, res) => res.json(PLANS));
+app.get('/api/plans', (_req, res) => res.json(toPublicPlans(PLANS)));
 
 // ==================== GOOGLE AUTH ====================
 app.get('/auth/google', passport.authenticate('google', { scope: ['profile', 'email'], session: false }));
@@ -82,7 +83,7 @@ app.get('/api/me', requireAuth, route(async (req, res) => {
   });
   if (!user) return res.status(404).json({ error: 'User not found' });
   const plan = getUserPlan(user);
-  res.json({ ...user, plan, limits: getLimits(plan) });
+  res.json({ ...user, plan, limits: toPublicLimits(getLimits(plan)) });
 }));
 
 // FIX #3 — GET /api/users (which returned every user) has been removed.
@@ -91,9 +92,13 @@ app.get('/api/me', requireAuth, route(async (req, res) => {
 // FIX #1 — the free "upgrade" and "downgrade" routes are gone. Plans now change
 // ONLY when Stripe tells the webhook a subscription started, changed or ended.
 
-// Starts a Stripe Checkout for Pro; frontend redirects the browser to `url`
+// Starts a Stripe Checkout for Pro; frontend redirects the browser to `url`.
+// Pass { trialOffer: true } to start on the $5/5-week intro price instead of
+// the regular Pro price — the webhook (applyTrialSchedule) then schedules the
+// automatic switch to the regular price after that one billing cycle.
 app.post('/api/subscription/checkout', requireAuth, route(async (req, res) => {
-  const priceId = process.env.STRIPE_PRO_PRICE_ID;
+  const trialOffer = Boolean(req.body?.trialOffer);
+  const priceId = trialOffer ? process.env.STRIPE_TRIAL_PRICE_ID : process.env.STRIPE_PRO_PRICE_ID;
   if (!priceId) return res.status(500).json({ error: 'Billing is not configured' });
 
   const stripe = getStripe();
@@ -113,13 +118,14 @@ app.post('/api/subscription/checkout', requireAuth, route(async (req, res) => {
     await prisma.user.update({ where: { id: user.id }, data: { stripeCustomerId: customerId } });
   }
 
+  const metadata = { userId: user.id, trialOffer: trialOffer ? 'true' : 'false' };
   const session = await stripe.checkout.sessions.create({
     mode: 'subscription',
     customer: customerId,
     client_reference_id: user.id,
     line_items: [{ price: priceId, quantity: 1 }],
-    metadata: { userId: user.id },
-    subscription_data: { metadata: { userId: user.id } },
+    metadata,
+    subscription_data: { metadata },
     success_url: `${FRONTEND_URL}/billing?status=success`,
     cancel_url: `${FRONTEND_URL}/billing?status=cancelled`,
   });

@@ -9,6 +9,25 @@ function getLimits(plan) {
   return PLANS[plan] ?? PLANS.FREE;
 }
 
+// JSON has no Infinity — it silently serializes to `null`, which looks like
+// a bug/missing value to an API consumer. Make "no limit" an explicit,
+// documented `null` instead of an accidental one wherever limits leave the
+// server as JSON. Internal comparisons (limitCheck below) keep using the
+// real Infinity value, untouched.
+function toPublicLimits(limits) {
+  const out = {};
+  for (const [key, value] of Object.entries(limits)) {
+    out[key] = value === Infinity ? null : value;
+  }
+  return out;
+}
+
+function toPublicPlans(plans) {
+  const out = {};
+  for (const [name, limits] of Object.entries(plans)) out[name] = toPublicLimits(limits);
+  return out;
+}
+
 // The plan a user record actually entitles them to right now
 function getUserPlan(user) {
   if (!user) return 'FREE';
@@ -62,4 +81,7 @@ async function requirePro(req, res, next) {
   }
 }
 
-module.exports = { PLANS, getLimits, getUserPlan, loadPlan, checkInvoiceLimit, checkClientLimit, requirePro };
+module.exports = {
+  PLANS, getLimits, getUserPlan, loadPlan, checkInvoiceLimit, checkClientLimit, requirePro,
+  toPublicLimits, toPublicPlans,
+};
