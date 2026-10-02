@@ -1,0 +1,108 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mongodb"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id           String    @id @default(auto()) @map("_id") @db.ObjectId
+  email        String    @unique
+  name         String?
+  picture      String?
+  googleId     String?   @unique
+  // FREE | PRO
+  subscription String    @default("FREE")
+  // unix timestamp of when PRO expires (null = never / not PRO)
+  proExpiresAt DateTime?
+  // set by /api/subscription/checkout and the Stripe webhook
+  stripeCustomerId     String?
+  stripeSubscriptionId String?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+  clients      Client[]
+  invoices     Invoice[]
+  chatSessions ChatSession[]
+
+  @@index([stripeCustomerId])
+}
+
+model Client {
+  id        String    @id @default(auto()) @map("_id") @db.ObjectId
+  name      String
+  email     String
+  company   String?
+  phone     String?
+  address   String?
+  userId    String    @db.ObjectId
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  invoices  Invoice[]
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  @@unique([email, userId])
+}
+
+model Invoice {
+  id            String      @id @default(auto()) @map("_id") @db.ObjectId
+  invoiceNumber String      @unique
+  clientId      String      @db.ObjectId
+  userId        String      @db.ObjectId
+  client        Client      @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  user          User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  subtotal      Float       @default(0)
+  taxRate       Float       @default(0)
+  taxAmount     Float       @default(0)
+  discount      Float       @default(0)
+  totalAmount   Float
+  currency      String      @default("USD")
+  description   String?
+  notes         String?
+  // PENDING | PAID | OVERDUE | CANCELLED
+  status        String      @default("PENDING")
+  issueDate     DateTime    @default(now())
+  dueDate       DateTime
+  paidDate      DateTime?
+  reminderSent  Boolean     @default(false)
+  reminderCount Int         @default(0)
+  // tracks which escalation stage was last sent (0=none,1=upcoming,2=due,3=overdue1,4=overdue2,5=final)
+  reminderStage Int         @default(0)
+  reminders     Reminder[]
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
+}
+
+model Reminder {
+  id        String   @id @default(auto()) @map("_id") @db.ObjectId
+  invoiceId String   @db.ObjectId
+  invoice   Invoice  @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  // OVERDUE | UPCOMING | MANUAL
+  type      String
+  // SENT | FAILED | PENDING
+  status    String
+  error     String?
+  sentAt    DateTime @default(now())
+  createdAt DateTime @default(now())
+}
+
+model ChatSession {
+  id        String        @id @default(auto()) @map("_id") @db.ObjectId
+  userId    String        @db.ObjectId
+  user      User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  messages  ChatMessage[]
+  createdAt DateTime      @default(now())
+  updatedAt DateTime      @updatedAt
+}
+
+model ChatMessage {
+  id        String      @id @default(auto()) @map("_id") @db.ObjectId
+  sessionId String      @db.ObjectId
+  session   ChatSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  // user | assistant
+  role      String
+  content   String
+  createdAt DateTime    @default(now())
+}
+
